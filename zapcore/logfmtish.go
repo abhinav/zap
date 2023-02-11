@@ -22,22 +22,29 @@ package zapcore
 
 import (
 	"encoding/base64"
-	"encoding/json"
+	"fmt"
 	"math"
+	"reflect"
 	"time"
 
 	"go.uber.org/zap/buffer"
 	"go.uber.org/zap/internal/bufferpool"
 )
 
+// logfmtishEncoder is an encoder for Zap
+// that writes output in a format similar to logfmt.
 type logfmtishEncoder struct {
-	ctx *buffer.Buffer
+	ctx *buffer.Buffer // context for this key
 	buf *buffer.Buffer
 
 	idx int64 // used only if encoding an array
 }
 
+// NewLogfmtishEncoder builds a new logfmt-style encoder.
 func NewLogfmtishEncoder() Encoder {
+	// TODO: Rename logfmtishEncoder to something else, export that,
+	// and return it from NewLogfmtishEncoder as a struct.
+
 	return &logfmtishEncoder{
 		ctx: bufferpool.Get(),
 		buf: bufferpool.Get(),
@@ -147,33 +154,15 @@ func (enc *logfmtishEncoder) AddUint16(k string, v uint16)   { enc.AddUint64(k, 
 func (enc *logfmtishEncoder) AddUint8(k string, v uint8)     { enc.AddUint64(k, uint64(v)) }
 func (enc *logfmtishEncoder) AddUintptr(k string, v uintptr) { enc.AddUint64(k, uint64(v)) }
 
-func (enc *logfmtishEncoder) AddReflected(k string, v interface{}) error {
-	// TODO: implement our own reflected encoder
-	bs, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-	v = nil
-	if err := json.Unmarshal(bs, &v); err != nil {
-		return err
+func (enc *logfmtishEncoder) AddReflected(k string, x interface{}) error {
+	if x == nil {
+		enc.addKey(k)
+		enc.buf.AppendString("null")
+		return nil
 	}
 
-	switch v := v.(type) {
-	case bool:
-		enc.AddBool(k, v)
-	case float64:
-		enc.AddFloat64(k, v)
-	case string:
-		enc.AddString(k, v)
-	case []any:
-		enc.AddArray(k, anyArray(v))
-	case map[string]any:
-		enc.AddObject(k, anyObject(v))
-	case nil:
-		enc.AddString(k, "nil")
-	}
-
-	return nil
+	v := reflect.ValueOf(x)
+	return getReflectMarshaler(v.Type(), false /* match interface */).AddTo(enc, k, v)
 }
 
 func (enc *logfmtishEncoder) OpenNamespace(k string) {
@@ -213,30 +202,6 @@ func (enc *logfmtishEncoder) EncodeEntry(ent Entry, fs []Field) (*buffer.Buffer,
 	line.Write(enc.buf.Bytes())
 	line.AppendByte('\n')
 	return line, nil
-}
-
-type anyObject map[string]any
-
-func (ms anyObject) MarshalLogObject(enc ObjectEncoder) error {
-	for k, v := range ms {
-		switch v := v.(type) {
-		case bool:
-			enc.AddBool(k, v)
-		case float64:
-			enc.AddFloat64(k, v)
-		case string:
-			enc.AddString(k, v)
-		case []any:
-			return enc.AddArray(k, anyArray(v))
-		case map[string]any:
-			if err := enc.AddObject(k, anyObject(v)); err != nil {
-				return err
-			}
-		case nil:
-			enc.AddString(k, "nil")
-		}
-	}
-	return nil
 }
 
 func (enc *logfmtishEncoder) addIndex() {
@@ -369,54 +334,305 @@ func (enc *logfmtishEncoder) AppendObject(v ObjectMarshaler) error {
 	return v.MarshalLogObject(&objenc)
 }
 
-func (enc *logfmtishEncoder) AppendReflected(v interface{}) error {
-	// TODO: implement our own reflected encoder
-	bs, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-	v = nil
-	if err := json.Unmarshal(bs, &v); err != nil {
-		return err
+func (enc *logfmtishEncoder) AppendReflected(x interface{}) error {
+	if x == nil {
+		enc.buf.AppendString("null")
+		return nil
 	}
 
-	switch v := v.(type) {
-	case bool:
-		enc.AppendBool(v)
-	case float64:
-		enc.AppendFloat64(v)
-	case string:
-		enc.AppendString(v)
-	case []any:
-		enc.AppendArray(anyArray(v))
-	case map[string]any:
-		enc.AppendObject(anyObject(v))
-	case nil:
-		enc.AppendString("nil")
+	v := reflect.ValueOf(x)
+	return getReflectMarshaler(v.Type(), false /* match interface */).AppendTo(enc, v)
+}
+
+// reflectMarshaler marshals a reflected value
+// into an ObjectEncoder or an ArrayEncoder.
+type reflectMarshaler interface {
+	// AddTo adds value to the ObjectEncoder under the given name.
+	AddTo(enc ObjectEncoder, name string, v reflect.Value) error
+
+	// AppendTo appends value to the ArrayEncoder.
+	AppendTo(enc ArrayEncoder, v reflect.Value) error
+}
+
+var (
+	// Holds reflectMarshalers that marshal by the Kind of value being written.
+	// This covers a majority of the cases for reflected types.
+	//
+	// These are stored by index of the Kind value.
+	_kindReflectMarshalers []reflectMarshaler
+
+	_typeOfByteSlice           = reflect.TypeOf([]byte(nil))
+	_byteSliceReflectMarshaler = &simpleReflectMarshaler[[]byte]{
+		get: func(v reflect.Value) []byte {
+			return v.Interface().([]byte)
+		},
+		addTo:    (ObjectEncoder).AddByteString,
+		appendTo: (ArrayEncoder).AppendByteString,
 	}
+
+	_typeOfObjectMarshaler           = reflect.TypeOf((*ObjectMarshaler)(nil)).Elem()
+	_objectMarshalerReflectMarshaler = &fallibleReflectMarshaler[ObjectMarshaler]{
+		get: func(v reflect.Value) ObjectMarshaler {
+			return v.Interface().(ObjectMarshaler)
+		},
+		addTo: func(enc ObjectEncoder, name string, m ObjectMarshaler) error {
+			return enc.AddObject(name, m)
+		},
+		appendTo: func(enc ArrayEncoder, m ObjectMarshaler) error {
+			return enc.AppendObject(m)
+		},
+	}
+
+	_typeOfArrayMarshaler           = reflect.TypeOf((*ArrayMarshaler)(nil)).Elem()
+	_arrayMarshalerReflectMarshaler = &fallibleReflectMarshaler[ArrayMarshaler]{
+		get: func(v reflect.Value) ArrayMarshaler {
+			return v.Interface().(ArrayMarshaler)
+		},
+		addTo:    (ObjectEncoder).AddArray,
+		appendTo: (ArrayEncoder).AppendArray,
+	}
+)
+
+// getReflectMarshaler returns the reflectMarshaler for the given type.
+func getReflectMarshaler(t reflect.Type, matchIface bool) (m reflectMarshaler) {
+	// TODO: meaningful error objects?
+
+	// Interfacing matching is conditional because
+	// the entry-point to this function is AddReflected;
+	// we've already checked for interface compliance by that point.
+	// This should use the reflected routes first,
+	// but recursive calls via structs and other values it encounters
+	// should match the ObjectMarshaler or ArrayMarshaler interfaces.
+	if matchIface {
+		// TODO: Handle case when PointerTo(t) implements the interfaces.
+		if t.Implements(_typeOfObjectMarshaler) {
+			return _objectMarshalerReflectMarshaler
+		}
+
+		if t.Implements(_typeOfArrayMarshaler) {
+			return _arrayMarshalerReflectMarshaler
+		}
+	}
+
+	if k := t.Kind(); int(k) < len(_kindReflectMarshalers) {
+		m = _kindReflectMarshalers[int(k)]
+	}
+	if m != nil {
+		return m
+	}
+
+	switch t.Kind() {
+	case reflect.Slice, reflect.Array:
+		if t == _typeOfByteSlice {
+			return _byteSliceReflectMarshaler
+		}
+
+		elem := getReflectMarshaler(t.Elem(), true)
+		if elem == nil {
+			panic("TODO: return error")
+		}
+
+		return &fallibleReflectMarshaler[ArrayMarshaler]{
+			get: func(v reflect.Value) ArrayMarshaler {
+				return &reflectArrayMarshaler{
+					elem: elem,
+					v:    v,
+				}
+			},
+			addTo:    (ObjectEncoder).AddArray,
+			appendTo: (ArrayEncoder).AppendArray,
+		}
+	}
+
+	// TODO: map marshaler should support any scalar or TextMarshaler key.
+
+	// TODO: map and interface marshalers
+	// TODO: struct marshalers when cached by type
 
 	return nil
 }
 
-type anyArray []any
+// Specifies the reflectMarshaler for the given kinds.
+func setKindReflectMarshaler(m reflectMarshaler, kinds ...reflect.Kind) {
+	// Ensure there's enough room.
+	for _, k := range kinds {
+		if len(_kindReflectMarshalers) < int(k)+1 {
+			ms := make([]reflectMarshaler, int(k)*2)
+			copy(ms, _kindReflectMarshalers)
+		}
+		_kindReflectMarshalers[int(k)] = m
+	}
+}
 
-func (vs anyArray) MarshalLogArray(enc ArrayEncoder) error {
-	for _, v := range vs {
-		switch v := v.(type) {
-		case bool:
-			enc.AppendBool(v)
-		case float64:
-			enc.AppendFloat64(v)
-		case string:
-			enc.AppendString(v)
-		case []any:
-			return enc.AppendArray(anyArray(v))
-		case map[string]any:
-			if err := enc.AppendObject(anyObject(v)); err != nil {
-				return err
-			}
-		case nil:
-			enc.AppendString("nil")
+func init() {
+	setKindReflectMarshaler(&simpleReflectMarshaler[bool]{
+		get:      (reflect.Value).Bool,
+		addTo:    (ObjectEncoder).AddBool,
+		appendTo: (ArrayEncoder).AppendBool,
+	}, reflect.Bool)
+	setKindReflectMarshaler(&simpleReflectMarshaler[int64]{
+		get:      (reflect.Value).Int,
+		addTo:    (ObjectEncoder).AddInt64,
+		appendTo: (ArrayEncoder).AppendInt64,
+	}, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64)
+	setKindReflectMarshaler(&simpleReflectMarshaler[uint64]{
+		get:      (reflect.Value).Uint,
+		addTo:    (ObjectEncoder).AddUint64,
+		appendTo: (ArrayEncoder).AppendUint64,
+	}, reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64)
+	setKindReflectMarshaler(&simpleReflectMarshaler[uintptr]{
+		get:      (reflect.Value).Pointer,
+		addTo:    (ObjectEncoder).AddUintptr,
+		appendTo: (ArrayEncoder).AppendUintptr,
+	}, reflect.Uintptr)
+	setKindReflectMarshaler(&simpleReflectMarshaler[float64]{
+		get:      (reflect.Value).Float,
+		addTo:    (ObjectEncoder).AddFloat64,
+		appendTo: (ArrayEncoder).AppendFloat64,
+	}, reflect.Float32, reflect.Float64)
+	setKindReflectMarshaler(&simpleReflectMarshaler[complex128]{
+		get:      (reflect.Value).Complex,
+		addTo:    (ObjectEncoder).AddComplex128,
+		appendTo: (ArrayEncoder).AppendComplex128,
+	}, reflect.Complex64, reflect.Complex128)
+	setKindReflectMarshaler(&ifaceReflectMarshaler{}, reflect.Interface)
+	setKindReflectMarshaler(&simpleReflectMarshaler[string]{
+		get:      (reflect.Value).String,
+		addTo:    (ObjectEncoder).AddString,
+		appendTo: (ArrayEncoder).AppendString,
+	}, reflect.String)
+
+	// TODO: struct marshaler should be cached per type.
+	setKindReflectMarshaler(&fallibleReflectMarshaler[ObjectMarshaler]{
+		get: func(v reflect.Value) ObjectMarshaler {
+			return &reflectStructMarshaler{v}
+		},
+		addTo:    (ObjectEncoder).AddObject,
+		appendTo: (ArrayEncoder).AppendObject,
+	}, reflect.Struct)
+}
+
+// simpleReflectMarshaler is a reflectMarshaler
+// for values that can be marshalled without any error.
+// It's parameterized over the kind of value it marshals.
+type simpleReflectMarshaler[T any] struct {
+	// Retrieves the native value from the reflected value.
+	// Typically, this will be an unbound method reference
+	// in the form,
+	//
+	//	(reflect.Value).Bool
+	get func(reflect.Value) T
+
+	// Adds the value returned by get to the ObjectEncoder.
+	// Typically, this will be an unbound method reference
+	// in the form,
+	//
+	//	(ObjectEncoder).AddBool
+	addTo func(ObjectEncoder, string, T)
+
+	// Appends the value returned by get to the ArrayEncoder.
+	// Typically, this will be an unbound method reference
+	// in the form,
+	//
+	//	(ArrayEncoder).AppendBool
+	appendTo func(ArrayEncoder, T)
+}
+
+var _ reflectMarshaler = (*simpleReflectMarshaler[any])(nil)
+
+func (m *simpleReflectMarshaler[T]) AddTo(enc ObjectEncoder, name string, v reflect.Value) error {
+	m.addTo(enc, name, m.get(v))
+	return nil
+}
+
+func (m *simpleReflectMarshaler[T]) AppendTo(enc ArrayEncoder, v reflect.Value) error {
+	m.appendTo(enc, m.get(v))
+	return nil
+}
+
+// fallibleReflectMarshaler is a reflectMarshaler
+// for values that could fail to marshal -- structs and arrays.
+type fallibleReflectMarshaler[T any] struct {
+	// Retrieves the native value from the reflected value.
+	get func(reflect.Value) T
+
+	// Adds the value returned by get to the ObjectEncoder.
+	addTo func(ObjectEncoder, string, T) error
+
+	// Appends the value returned by get to the ArrayEncoder.
+	appendTo func(ArrayEncoder, T) error
+}
+
+var _ reflectMarshaler = (*fallibleReflectMarshaler[any])(nil)
+
+func (m *fallibleReflectMarshaler[T]) AddTo(enc ObjectEncoder, name string, v reflect.Value) error {
+	return m.addTo(enc, name, m.get(v))
+}
+
+func (m *fallibleReflectMarshaler[T]) AppendTo(enc ArrayEncoder, v reflect.Value) error {
+	return m.appendTo(enc, m.get(v))
+}
+
+// ifaceReflectMarshaler is a reflectMarshaler that inspects the type
+// of the value to delegate to the appropriate reflectMarshaler.
+type ifaceReflectMarshaler struct{}
+
+var _ reflectMarshaler = (*ifaceReflectMarshaler)(nil)
+
+func (*ifaceReflectMarshaler) AddTo(enc ObjectEncoder, k string, v reflect.Value) error {
+	v = v.Elem()
+	m := getReflectMarshaler(v.Type(), true /* match iface */)
+	return m.AddTo(enc, k, v)
+}
+
+func (*ifaceReflectMarshaler) AppendTo(enc ArrayEncoder, v reflect.Value) error {
+	v = v.Elem()
+	m := getReflectMarshaler(v.Type(), true /* match iface */)
+	return m.AppendTo(enc, v)
+}
+
+// reflectArrayMarshaler is a Zap ArrayMarshaler
+// that encodes its elements using a reflectMarshaler.
+type reflectArrayMarshaler struct {
+	elem reflectMarshaler // element marshaler
+	v    reflect.Value    // slice or array
+}
+
+var _ ArrayMarshaler = (*reflectArrayMarshaler)(nil)
+
+func (m *reflectArrayMarshaler) MarshalLogArray(enc ArrayEncoder) error {
+	v := m.v
+	for i := 0; i < v.Len(); i++ {
+		item := v.Index(i)
+		if err := m.elem.AppendTo(enc, item); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type reflectStructMarshaler struct{ v reflect.Value }
+
+// TODO: This should be a cached, reflection-based ObjectMarshaler.
+
+func (m *reflectStructMarshaler) MarshalLogObject(enc ObjectEncoder) error {
+	// TODO: Look at "json" tags, cache that information somewhere.
+	v := m.v
+	t := v.Type()
+	for i := 0; i < v.NumField(); i++ {
+		f := t.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+
+		field := v.Field(i)
+		fieldm := getReflectMarshaler(f.Type, true)
+		if fieldm == nil {
+			return fmt.Errorf("unsupported type: %v", f.Type.Kind())
+		}
+
+		if err := fieldm.AddTo(enc, f.Name, field); err != nil {
+			return err
 		}
 	}
 	return nil
