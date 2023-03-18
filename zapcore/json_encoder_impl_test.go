@@ -225,13 +225,15 @@ func TestJSONEncoderObjectFields(t *testing.T) {
 				assert.NoError(t, e.AddReflected("k", map[string]string{"escape": "<&>", "loggable": "yes"}), "Unexpected error JSON-serializing a map.")
 			},
 		},
-		{
-			desc:     "reflect (failure)",
-			expected: "",
-			f: func(e Encoder) {
-				assert.Error(t, e.AddReflected("k", noJSON{}), "Unexpected success JSON-serializing a noJSON.")
-			},
-		},
+		// {
+		// We don't support the MarshalJSON anymore because that's a
+		// json.Marshal thing.
+		// 	desc:     "reflect (failure)",
+		// 	expected: "",
+		// 	f: func(e Encoder) {
+		// 		assert.Error(t, e.AddReflected("k", noJSON{}), "Unexpected success JSON-serializing a noJSON.")
+		// 	},
+		// },
 		{
 			desc: "namespace",
 			// EncodeEntry is responsible for closing all open namespaces.
@@ -405,17 +407,17 @@ func TestJSONEncoderArrays(t *testing.T) {
 				)
 			},
 		},
-		{
-			desc:     "reflect (error)",
-			expected: `[]`,
-			f: func(arr ArrayEncoder) {
-				assert.Error(
-					t,
-					arr.AppendReflected(noJSON{}),
-					"Unexpected an error appending an object with reflection.",
-				)
-			},
-		},
+		// {
+		// 	desc:     "reflect (error)",
+		// 	expected: `[]`,
+		// 	f: func(arr ArrayEncoder) {
+		// 		assert.Error(
+		// 			t,
+		// 			arr.AppendReflected(noJSON{}),
+		// 			"Unexpected an error appending an object with reflection.",
+		// 		)
+		// 	},
+		// },
 		{
 			desc:     "object (no nested namespace) then string",
 			expected: `[{"obj-out":"obj-outside-namespace"},"should-be-outside-obj",{"obj-out":"obj-outside-namespace"},"should-be-outside-obj"]`,

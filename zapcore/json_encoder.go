@@ -23,6 +23,7 @@ package zapcore
 import (
 	"encoding/base64"
 	"math"
+	"reflect"
 	"time"
 	"unicode/utf8"
 
@@ -162,28 +163,14 @@ func (enc *jsonEncoder) resetReflectBuf() {
 
 var nullLiteralBytes = []byte("null")
 
-// Only invoke the standard JSON encoder if there is actually something to
-// encode; otherwise write JSON null literal directly.
-func (enc *jsonEncoder) encodeReflected(obj interface{}) ([]byte, error) {
-	if obj == nil {
-		return nullLiteralBytes, nil
-	}
-	enc.resetReflectBuf()
-	if err := enc.reflectEnc.Encode(obj); err != nil {
-		return nil, err
-	}
-	enc.reflectBuf.TrimNewline()
-	return enc.reflectBuf.Bytes(), nil
-}
-
 func (enc *jsonEncoder) AddReflected(key string, obj interface{}) error {
-	valueBytes, err := enc.encodeReflected(obj)
-	if err != nil {
+	if obj == nil {
+		enc.addKey(key)
+		_, err := enc.buf.Write(nullLiteralBytes)
 		return err
 	}
-	enc.addKey(key)
-	_, err = enc.buf.Write(valueBytes)
-	return err
+	v := reflect.ValueOf(obj)
+	return reflectMarshalerFor(v.Type()).AddTo(enc, key, v)
 }
 
 func (enc *jsonEncoder) OpenNamespace(key string) {
@@ -280,13 +267,13 @@ func (enc *jsonEncoder) AppendInt64(val int64) {
 }
 
 func (enc *jsonEncoder) AppendReflected(val interface{}) error {
-	valueBytes, err := enc.encodeReflected(val)
-	if err != nil {
+	if val == nil {
+		enc.addElementSeparator()
+		_, err := enc.buf.Write(nullLiteralBytes)
 		return err
 	}
-	enc.addElementSeparator()
-	_, err = enc.buf.Write(valueBytes)
-	return err
+	v := reflect.ValueOf(val)
+	return reflectMarshalerFor(v.Type()).AppendTo(enc, v)
 }
 
 func (enc *jsonEncoder) AppendString(val string) {
