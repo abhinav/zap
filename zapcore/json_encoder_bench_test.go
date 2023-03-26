@@ -99,3 +99,34 @@ func BenchmarkStandardJSON(b *testing.B) {
 		}
 	})
 }
+
+func BenchmarkZapReflectJSON(b *testing.B) {
+	record := struct {
+		Level   string                 `json:"level"`
+		Message string                 `json:"msg"`
+		Time    time.Time              `json:"ts"`
+		Fields  map[string]interface{} `json:"fields"`
+	}{
+		Level:   "debug",
+		Message: "fake",
+		Time:    time.Unix(0, 0),
+		Fields: map[string]interface{}{
+			"str":     "foo",
+			"int64-1": int64(1),
+			"int64-2": int64(1),
+			"float64": float64(1.0),
+			"string1": "\n",
+			"string2": "💩",
+			"string3": "🤔",
+			"string4": "🙊",
+			"bool":    true,
+		},
+	}
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			enc := NewJSONEncoder(testEncoderConfig())
+			enc.AddReflected("x", record)
+		}
+	})
+}
