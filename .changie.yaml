@@ -1,0 +1,54 @@
+changesDir: .changes
+unreleasedDir: unreleased
+headerPath: header.tpl.md
+changelogPath: CHANGELOG.md
+versionExt: md
+envPrefix: CHANGIE_
+
+# Version headers don't have a 'v' prefix,
+# and follow a human-readable date format.
+versionFormat: '## {{trimPrefix "v" .Version}} - {{.Time.Format "2 Jan 2006"}}'
+
+projectsVersionSeparator: /
+projects:
+  - label: zap
+    key: zap
+    changelog: CHANGELOG.md
+  - label: exp
+    key: exp
+    changelog: exp/CHANGELOG.md
+
+kindFormat: '{{.Kind}}:'
+kinds:
+- label: Breaking changes
+  auto: major
+- label: Enhancements
+  auto: minor
+- label: Other improvements
+  auto: minor
+- label: Bugfixes
+  auto: patch
+
+# Allow specifying PRs associated with changes.
+custom:
+  - key: PR
+    label: 'Pull Request # (empty if unknown)'
+    type: int
+    minInt: 1
+    optional: true
+
+# If PR numbers are specified,
+# render reference links for them in each change entry.
+changeFormat: '* {{ with .Custom.PR -}}[#{{.}}][]: {{ end }}{{.Body}}'
+footerFormat: |-
+  {{ with (customs .Changes "PR" | compact | uniq) }}
+  {{ range . -}}
+  [#{{ . }}]: https://github.com/uber-go/zap/pull/{{ . }}
+  {{ end -}}
+  {{ end }}
+
+newlines:
+  afterChangelogHeader: 0
+  beforeChangelogVersion: 1
+  afterVersion: 1
+  endOfVersion: 1
