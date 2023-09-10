@@ -1,0 +1,32 @@
+# Based on https://github.com/miniscruff/changie/blob/main/.github/workflows/changelog-check.yml
+name: Require changelog entry
+
+on:
+  pull_request:
+    types:
+      - "opened"
+      - "reopened"
+      - "synchronize"
+
+      # For `skip-label` support:
+      - "labeled"
+      - "unlabeled"
+
+jobs:
+
+  check-changelog:
+    runs-on: ubuntu-latest
+    steps:
+
+    - name: "Check for changelog entry"
+      uses: brettcannon/check-for-changed-files@v1.2.0
+      with:
+        file-pattern: |
+          .changes/unreleased/*.yaml
+          CHANGELOG.md
+          exp/CHANGELOG.md
+        skip-label: "skip changelog"
+        failure-message: |
+          Missing a changelog entry in ${file-pattern}.
+          Please add a changelog entry with 'make change-new',
+          or add the ${skip-label} label to this pull request.
