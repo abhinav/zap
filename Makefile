@@ -5,6 +5,7 @@ export GOBIN ?= $(PROJECT_ROOT)/bin
 export PATH := $(GOBIN):$(PATH)
 
 GOVULNCHECK = $(GOBIN)/govulncheck
+CHANGIE = $(GOBIN)/changie
 BENCH_FLAGS ?= -cpuprofile=cpu.pprof -memprofile=mem.pprof -benchmem
 
 # Directories containing independent Go modules.
@@ -44,8 +45,14 @@ tidy-lint:
 license-lint:
 	./checklicense.sh
 
+.PHONY: tools
+tools: $(GOVULNCHECK) $(CHANGIE)
+
 $(GOVULNCHECK):
 	cd tools && go install golang.org/x/vuln/cmd/govulncheck
+
+$(CHANGIE):
+	cd tools && go install github.com/miniscruff/changie
 
 .PHONY: test
 test:
@@ -74,3 +81,35 @@ updatereadme:
 .PHONY: vulncheck
 vulncheck: $(GOVULNCHECK)
 	$(GOVULNCHECK) ./...
+
+## Changelog management targets:
+#
+# changelog/all, changelog/zap, changelog/exp
+#   Generates combined changelogs for all or specific modules.
+#
+# change-new/<module>
+#   Creates a new changelog entry for the given module.
+#
+# change-batch/<module> VERSION=[major|minor|patch]
+#   Batch unreleased changes for the module into a new release.
+
+.PHONY: changelog/all
+changelog/all: changelog/zap changelog/exp
+
+.PHONE: changelog/%
+changelog/%: $(CHANGIE)
+	$(CHANGIE) merge -j $*
+
+.PHONY: change-new/%
+change-new/%: $(CHANGIE)
+	$(CHANGIE) new -j $*
+
+.PHONY: change-new
+change-new:
+	@echo "Usage: make change-new/<module>"
+	@echo "  where <module> is one of: zap, exp"
+
+.PHONY: change-batch/%
+change-batch/%: $(CHANGIE)
+	@VERSION=$${VERSION:?Please set VERSION}; \
+	$(CHANGIE) batch -j $* $$VERSION

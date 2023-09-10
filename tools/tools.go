@@ -26,4 +26,5 @@ package tools
 import (
 	// Tools we use during development.
 	_ "golang.org/x/vuln/cmd/govulncheck"
+	_ "github.com/miniscruff/changie"
 )
