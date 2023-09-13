@@ -4,3 +4,4 @@ body: "zapslog: Record stack traces if requested."
 time: 2023-09-09T21:08:05.328762904-07:00
 custom:
   PR: "1339"
+  Author: "zekth"

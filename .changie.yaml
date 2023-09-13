@@ -36,16 +36,30 @@ custom:
     type: int
     minInt: 1
     optional: true
+  - key: Author
+    label: 'Author (empty to skip)'
+    type: string
+    minLength: 3
+    optional: true
 
 # If PR numbers are specified,
 # render reference links for them in each change entry.
 changeFormat: '* {{ with .Custom.PR -}}[#{{.}}][]: {{ end }}{{.Body}}'
 footerFormat: |-
-  {{ with (customs .Changes "PR" | compact | uniq) }}
-  {{ range . -}}
+  {{ define "ghUser" }}@{{ trimPrefix "@" . }}{{ end -}}
+
+  {{- with (customs .Changes "Author" | compact | uniq) }}
+  Thanks to
+  {{- if eq (len .) 1 }}{{ range . }} {{ template "ghUser" . }}{{ end }}
+  {{- else }}{{ range (initial .) }} {{ template "ghUser" . }},{{ end }} and {{ template "ghUser" (last .) }}
+  {{- end }} for their contributions to this release.
+  {{- end }}
+
+  {{- with (customs .Changes "PR" | compact | uniq) }}
+  {{ range . }}
   [#{{ . }}]: https://github.com/uber-go/zap/pull/{{ . }}
+  {{- end -}}
   {{ end -}}
-  {{ end }}
 
 newlines:
   afterChangelogHeader: 0
