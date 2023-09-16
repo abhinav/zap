@@ -29,33 +29,45 @@ kinds:
 - label: Bugfixes
   auto: patch
 
-# Allow specifying PRs associated with changes.
-custom:
-  - key: PR
-    label: 'Pull Request # (empty if unknown)'
-    type: int
-    minInt: 1
-    optional: true
-  - key: Author
-    label: 'Author (empty to skip)'
-    type: string
-    minLength: 3
-    optional: true
+# We use two custom fields:
+#
+# - PR: Pull requst number
+# - Author: Author of the pull request
+#
+# However, we don't actually configure these
+# because doing so will force specifying them
+# when someone calls 'changie new'.
+#
+# We want to auto-populate both fields in the pull request automatically.
 
 # If PR numbers are specified,
 # render reference links for them in each change entry.
+#
+# The footer will include the destinations for each reference link.
 changeFormat: '* {{ with .Custom.PR -}}[#{{.}}][]: {{ end }}{{.Body}}'
-footerFormat: |-
-  {{ define "ghUser" }}@{{ trimPrefix "@" . }}{{ end -}}
 
-  {{- with (customs .Changes "Author" | compact | uniq) }}
+# The footer include a list of contributors for the release,
+# and the other ends of each reference link for each PR.
+footerFormat: |-
+  {{- $authors := list }}
+  {{- $prs := list }}
+  {{- range .Changes }}
+    {{- with .Custom.Author }}
+      {{- $authors = append $authors (trimPrefix "@" . | printf "@%s") }}
+    {{- end }}
+    {{- with .Custom.PR }}
+      {{- $prs = append $prs . }}
+    {{- end }}
+  {{- end }}
+
+  {{- with ($authors | sortAlpha | uniq) }}
   Thanks to
-  {{- if eq (len .) 1 }}{{ range . }} {{ template "ghUser" . }}{{ end }}
-  {{- else }}{{ range (initial .) }} {{ template "ghUser" . }},{{ end }} and {{ template "ghUser" (last .) }}
+  {{- if eq (len .) 1 }} {{ first . }}
+  {{- else }} {{ initial . | join ", "}}, and {{ last .}}
   {{- end }} for their contributions to this release.
   {{- end }}
 
-  {{- with (customs .Changes "PR" | compact | uniq) }}
+  {{- with ($prs | sortAlpha | uniq) }}
   {{ range . }}
   [#{{ . }}]: https://github.com/uber-go/zap/pull/{{ . }}
   {{- end -}}
